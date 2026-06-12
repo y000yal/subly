@@ -1,6 +1,7 @@
-// Contracts between the three things that share a frame's ISOLATED world:
-// the declared content stub, the lazily-imported engine chunk, and functions
-// injected via chrome.scripting.executeScript (which run in the same world).
+// Contract for the engine API that the injected engine.js chunk registers on
+// globalThis in each frame's ISOLATED world. Both the scan call and the later
+// start/stop calls (all dispatched via chrome.scripting.executeScript) read it
+// from the same world, so the per-frame video registry stays consistent.
 
 import type { FrameScanResult, PipTier, SessionState } from './messages';
 
@@ -12,16 +13,9 @@ export interface PipEngineGlobal {
   state(): SessionState;
 }
 
-export interface PipStubGlobal {
-  ensureEngine(): Promise<PipEngineGlobal>;
-  scanForActivation(): Promise<FrameScanResult>;
-}
-
 declare global {
   // eslint-disable-next-line no-var
   var __pipEngine: PipEngineGlobal | undefined;
-  // eslint-disable-next-line no-var
-  var __pipStub: PipStubGlobal | undefined;
 }
 
 export {};

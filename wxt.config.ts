@@ -11,7 +11,15 @@ export default defineConfig({
     description:
       "Watch any video in Picture-in-Picture with the site's own subtitles shown in the floating window. Works on every site.",
     minimum_chrome_version: '116',
-    permissions: ['scripting', 'storage', 'activeTab'],
+    permissions: ['scripting', 'storage'],
+    // Broad host access is required for the product's single purpose: detect the
+    // video and mirror the site's enabled subtitles on any page, INCLUDING players
+    // embedded in cross-origin iframes. activeTab is insufficient — it only
+    // authorizes the top frame's origin, so executeScript({allFrames}) silently
+    // skips cross-origin player frames (confirmed: the video frame is never
+    // reached). With <all_urls>, executeScript reaches every frame on activation.
+    // Nothing is injected until the user clicks the toolbar button or presses Alt+P.
+    host_permissions: ['<all_urls>'],
     action: {
       default_title: 'Toggle Picture-in-Picture with subtitles (Alt+P)',
     },
@@ -21,12 +29,8 @@ export default defineConfig({
         description: 'Toggle Picture-in-Picture with subtitles',
       },
     },
-    web_accessible_resources: [
-      {
-        // The lazily-imported engine chunk, loaded by the content stub on activation.
-        resources: ['engine.js'],
-        matches: ['<all_urls>'],
-      },
-    ],
+    // No web_accessible_resources: the engine chunk is injected on activation via
+    // chrome.scripting.executeScript({ files: ['engine.js'] }), which loads it
+    // into the frame's isolated world without exposing it to page contexts.
   },
 });

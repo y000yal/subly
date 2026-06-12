@@ -54,6 +54,7 @@ const SHEET = `
   .controls button:hover { background: rgba(255, 255, 255, 0.25); }
   .controls input[type="range"] { flex: 1; min-width: 40px; accent-color: #60a5fa; cursor: pointer; }
   .controls input[type="range"].hidden { visibility: hidden; }
+  .controls input[type="range"].vol { flex: none; width: 60px; }
   .controls .time { font: 11px/1 system-ui, sans-serif; color: #d1d5db; flex: none; min-width: 76px; text-align: center; }
 `;
 
@@ -80,7 +81,7 @@ export function createPipUI(
 
   const controls = doc.createElement('div');
   controls.className = 'controls';
-  controls.setAttribute('data-pip-subs', 'controls');
+  controls.setAttribute('data-subly', 'controls');
   const playBtn = button(doc, '⏸');
   const seek = doc.createElement('input');
   seek.type = 'range';
@@ -89,15 +90,25 @@ export function createPipUI(
   seek.value = '0';
   const time = doc.createElement('span');
   time.className = 'time';
-  time.setAttribute('data-pip-subs', 'time');
+  time.setAttribute('data-subly', 'time');
   time.textContent = '–:– / –:–';
+  const volBtn = button(doc, '🔊');
+  volBtn.title = 'Toggle mute';
+  const volSlider = doc.createElement('input');
+  volSlider.type = 'range';
+  volSlider.className = 'vol';
+  volSlider.min = '0';
+  volSlider.max = '1';
+  volSlider.step = '0.02';
+  volSlider.value = '1';
+  volSlider.title = 'Volume';
   const smaller = button(doc, 'A−');
   smaller.title = 'Smaller subtitles';
   const bigger = button(doc, 'A+');
   bigger.title = 'Bigger subtitles';
   const back = button(doc, '↩ Tab');
   back.title = 'Back to tab';
-  controls.append(playBtn, seek, time, smaller, bigger, back);
+  controls.append(playBtn, seek, time, volBtn, volSlider, smaller, bigger, back);
 
   doc.body.append(stage, subs, controls);
 
@@ -107,6 +118,10 @@ export function createPipUI(
     doc.body.classList.add('show-controls');
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => doc.body.classList.remove('show-controls'), 2500);
+  };
+  const keepVisible = () => {
+    doc.body.classList.add('show-controls');
+    clearTimeout(hideTimer);
   };
   doc.addEventListener('mousemove', poke);
   doc.addEventListener('click', poke);
@@ -137,9 +152,14 @@ export function createPipUI(
       const sec = Math.floor(s % 60);
       return `${m}:${String(sec).padStart(2, '0')}`;
     };
+
     const syncPlayState = () => {
-      playBtn.textContent = video.paused ? '⏵' : '⏸';
+      const paused = video.paused;
+      playBtn.textContent = paused ? '⏵' : '⏸';
+      // Keep controls visible while paused so the user can see the play button.
+      if (paused) keepVisible();
     };
+
     const syncTime = () => {
       const live = !Number.isFinite(video.duration);
       seek.classList.toggle('hidden', live);
@@ -150,6 +170,13 @@ export function createPipUI(
       time.textContent = live
         ? `LIVE ${fmt(video.currentTime)}`
         : `${fmt(video.currentTime)} / ${fmt(video.duration)}`;
+    };
+
+    const syncVolume = () => {
+      const muted = video.muted || video.volume === 0;
+      const v = video.volume;
+      volBtn.textContent = muted ? '🔇' : v < 0.33 ? '🔈' : v < 0.66 ? '🔉' : '🔊';
+      if (!muted) volSlider.value = String(v);
     };
 
     const onPlayClick = () => {
@@ -164,25 +191,39 @@ export function createPipUI(
       dragging = false;
       video.currentTime = Number(seek.value);
     };
+    const onVolBtnClick = () => {
+      video.muted = !video.muted;
+    };
+    const onVolSliderInput = () => {
+      video.volume = Number(volSlider.value);
+      video.muted = video.volume === 0;
+    };
 
     playBtn.addEventListener('click', onPlayClick);
     seek.addEventListener('input', onSeekInput);
     seek.addEventListener('change', onSeekChange);
+    volBtn.addEventListener('click', onVolBtnClick);
+    volSlider.addEventListener('input', onVolSliderInput);
     video.addEventListener('play', syncPlayState);
     video.addEventListener('pause', syncPlayState);
     video.addEventListener('timeupdate', syncTime);
     video.addEventListener('durationchange', syncTime);
+    video.addEventListener('volumechange', syncVolume);
     syncPlayState();
     syncTime();
+    syncVolume();
 
     boundCleanup = () => {
       playBtn.removeEventListener('click', onPlayClick);
       seek.removeEventListener('input', onSeekInput);
       seek.removeEventListener('change', onSeekChange);
+      volBtn.removeEventListener('click', onVolBtnClick);
+      volSlider.removeEventListener('input', onVolSliderInput);
       video.removeEventListener('play', syncPlayState);
       video.removeEventListener('pause', syncPlayState);
       video.removeEventListener('timeupdate', syncTime);
       video.removeEventListener('durationchange', syncTime);
+      video.removeEventListener('volumechange', syncVolume);
     };
   }
 

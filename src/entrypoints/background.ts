@@ -103,7 +103,24 @@ export default defineBackground(() => {
       return;
     }
 
-    // Scan every frame. executeScript both carries the user gesture into each
+    // Load the engine into every frame as a FILE. This is the reliable path
+    // under activeTab (with no declared content script): executeScript({files})
+    // runs the self-registering engine chunk in each frame's isolated world,
+    // setting globalThis.__pipEngine. registerEngine() is idempotent, so a frame
+    // that already has it is a no-op. Dynamic import() inside an injected func is
+    // unreliable, which is why we inject the file directly instead.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        files: ['engine.js'],
+      });
+    } catch (err) {
+      log.warn('cannot inject into this page', err);
+      void flashBadge(tabId, '!');
+      return;
+    }
+
+    // Scan every frame. executeScript also carries the user gesture into each
     // frame's document (required later for requestWindow/requestPictureInPicture)
     // and returns each frame's candidates directly.
     let results: chrome.scripting.InjectionResult[];
@@ -113,10 +130,15 @@ export default defineBackground(() => {
         func: scanFrame,
       });
     } catch (err) {
-      log.warn('cannot inject into this page', err);
+      log.warn('scan injection failed', err);
       void flashBadge(tabId, '!');
       return;
     }
+
+    log.warn(
+      'SCAN DEBUG ' +
+        JSON.stringify(results.map((r) => ({ frameId: r.frameId, result: r.result }))),
+    );
 
     bgDiag(tabId, 'scan/results', {
       frames: results.map((r) => {
@@ -239,19 +261,24 @@ function stopInjected(): void {
   void globalThis.__pipEngine?.stop('user');
 }
 
-async function scanFrame(): Promise<unknown> {
+function scanFrame(): unknown {
+  // The engine was injected as a file immediately before this call, so it is
+  // already registered on globalThis in this frame's isolated world.
   const isTop = window === window.top;
-  try {
-    const stub = globalThis.__pipStub;
-    if (stub) return await stub.scanForActivation();
-    // Stub absent (tab predates install/update): load the engine directly.
-    await import(/* @vite-ignore */ chrome.runtime.getURL('/engine.js'));
-    const engine = globalThis.__pipEngine;
-    if (engine) return engine.scan();
-  } catch {
-    // fall through to empty result
+  const engine = globalThis.__pipEngine;
+  const dbg = {
+    hasEngine: Boolean(engine),
+    rawVideos: document.querySelectorAll('video').length,
+    href: location.href.slice(0, 120),
+  };
+  if (engine) {
+    try {
+      return { ...engine.scan(), __dbg: dbg };
+    } catch (e) {
+      return { candidates: [], isTop, coveredByParent: false, __dbg: { ...dbg, err: String(e) } };
+    }
   }
-  return { candidates: [], isTop, coveredByParent: false };
+  return { candidates: [], isTop, coveredByParent: false, __dbg: dbg };
 }
 
 function toastInjected(text: string): void {
