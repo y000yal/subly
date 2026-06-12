@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Fixture: cross-origin iframe embed</title>
+  <style>
+    body { font: 14px system-ui; background: #1c1917; color: #eee; padding: 24px; }
+    iframe { border: 2px solid #444; }
+  </style>
+</head>
+<body>
+  <h1>Cross-origin iframe fixture</h1>
+  <p>
+    Serve via <code>npm run fixtures</code>, open this page on
+    <code>http://localhost:8901/iframe-embed.html</code> — the iframe below loads from
+    <code>127.0.0.1</code>, which is a different origin. Expected tier: canvas compositor
+    + native PiP with burned-in subtitles.
+  </p>
+  <iframe src="http://127.0.0.1:8901/texttrack.html" width="700" height="520"
+          allow="picture-in-picture"></iframe>
+</body>
+</html>

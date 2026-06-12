@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Fixture: native TextTrack player</title>
+  <style>
+    body { font: 14px system-ui; background: #0f172a; color: #e2e8f0; padding: 24px; }
+    video { width: 640px; height: 360px; background: #000; display: block; }
+    button { margin-top: 12px; padding: 8px 14px; }
+  </style>
+</head>
+<body>
+  <h1>Native TextTrack fixture</h1>
+  <p>Synthetic video (canvas stream) with a programmatic 'captions' TextTrack cycling cues every 2s.</p>
+  <video id="v" muted autoplay playsinline></video>
+  <button id="activate">Activate PiP (test hook)</button>
+  <button id="toggleTrack">Toggle track mode (showing/disabled)</button>
+
+  <script>
+    // Fully local synthetic source: animated canvas -> captureStream.
+    const canvas = document.createElement('canvas');
+    canvas.width = 640; canvas.height = 360;
+    const ctx = canvas.getContext('2d');
+    let t = 0;
+    setInterval(() => {
+      t += 1;
+      ctx.fillStyle = `hsl(${(t * 2) % 360} 60% 30%)`;
+      ctx.fillRect(0, 0, 640, 360);
+      ctx.fillStyle = '#fff';
+      ctx.font = '48px system-ui';
+      ctx.fillText(`frame ${t}`, 40, 80);
+      ctx.beginPath();
+      ctx.arc(320 + Math.sin(t / 10) * 200, 220, 30, 0, Math.PI * 2);
+      ctx.fill();
+    }, 33);
+
+    const v = document.getElementById('v');
+    v.srcObject = canvas.captureStream(30);
+
+    const track = v.addTextTrack('captions', 'Test captions', 'en');
+    track.mode = 'showing';
+    const LINES = [
+      'Hello from the TextTrack fixture.',
+      'Cues arrive every two seconds.',
+      'This one has\ntwo lines.',
+      'Almost there…',
+      'Looping back to the start.',
+    ];
+    // Cue windows keyed to currentTime, repeating forever.
+    function scheduleCues() {
+      const horizon = Math.ceil(v.currentTime) + 60;
+      for (let s = Math.floor(v.currentTime); s < horizon; s += 2) {
+        const cue = new VTTCue(s, s + 1.6, LINES[(s / 2) % LINES.length | 0]);
+        track.addCue(cue);
+      }
+    }
+    v.addEventListener('playing', scheduleCues, { once: true });
+    setInterval(() => {
+      // keep extending the cue horizon for long sessions
+      const cues = track.cues;
+      const lastEnd = cues && cues.length ? cues[cues.length - 1].endTime : 0;
+      if (v.currentTime > lastEnd - 30) {
+        for (let s = Math.ceil(lastEnd); s < lastEnd + 60; s += 2) {
+          track.addCue(new VTTCue(s, s + 1.6, LINES[(s / 2) % LINES.length | 0]));
+        }
+      }
+    }, 10000);
+
+    document.getElementById('toggleTrack').addEventListener('click', () => {
+      track.mode = track.mode === 'showing' ? 'disabled' : 'showing';
+    });
+    document.getElementById('activate').addEventListener('click', () => {
+      window.dispatchEvent(new Event('PIPSUBS_TEST_ACTIVATE'));
+    });
+  </script>
+</body>
+</html>

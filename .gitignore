@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# WXT / Vite build output
+.output/
+.wxt/
+dist/
+*.local
+
+# Extension packages (upload zips locally; don't commit)
+*.zip
+*.crx
+*.pem
+
+# Logs & debug
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# TypeScript
+*.tsbuildinfo
+
+# Test / coverage
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors
+.idea/
+*.swp
+*.swo
+*~
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
