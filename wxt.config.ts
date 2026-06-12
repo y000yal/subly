@@ -11,12 +11,7 @@ export default defineConfig({
     description:
       "Watch any video in Picture-in-Picture with the site's own subtitles shown in the floating window. Works on every site.",
     minimum_chrome_version: '116',
-    permissions: ['scripting', 'storage'],
-    // Broad host access is required for the product's single purpose: detect the
-    // video and mirror the site's enabled subtitles on any page, including
-    // players embedded in cross-origin iframes. The injected stub is ~2 KB and
-    // inert until the user activates the extension.
-    host_permissions: ['<all_urls>'],
+    permissions: ['scripting', 'storage', 'activeTab'],
     action: {
       default_title: 'Toggle Picture-in-Picture with subtitles (Alt+P)',
     },
