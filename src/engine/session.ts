@@ -171,11 +171,11 @@ export class PipSession {
   }
 
   private showRetryToast(): void {
-    const id = '__subly_retry';
+    const id = '__captiv_retry';
     document.getElementById(id)?.remove();
     const el = document.createElement('div');
     el.id = id;
-    el.setAttribute('data-subly', 'toast');
+    el.setAttribute('data-captiv', 'toast');
     el.textContent = 'Click to open Picture-in-Picture';
     el.style.cssText =
       'position:fixed;z-index:2147483647;right:16px;bottom:16px;cursor:pointer;' +

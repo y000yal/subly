@@ -57,7 +57,7 @@ export async function startCanvasPip(
     diag('canvas/wait-result', { gotData, readyState: video.readyState });
     if (!gotData) {
       showInlineToast(
-        'Subly: the video is still loading — try again once it plays.',
+        'Captiv: the video is still loading — try again once it plays.',
       );
       throw new Error('video has no frames (stalled or still buffering)');
     }
@@ -161,8 +161,10 @@ export async function startCanvasPip(
     void stop();
     hooks.onClosed('user');
   });
-  // Native PiP window play/pause buttons come from Media Session.
-  bindMediaSession(src);
+
+  // Native PiP play/pause + scrubber come from Media Session. Re-bound on
+  // setSource() so handlers track the current element.
+  bindMediaSession(src, hidden);
 
   return {
     mode: 'canvas',
@@ -181,7 +183,7 @@ export async function startCanvasPip(
       stopPump();
       src = next;
       stopPump = startFramePump(next, draw);
-      bindMediaSession(next);
+      bindMediaSession(next, hidden);
     },
     stop,
   };
@@ -206,6 +208,7 @@ async function startNativeOnly(
   );
   const onLeave = () => hooks.onClosed('user');
   video.addEventListener('leavepictureinpicture', onLeave, { once: true });
+  bindMediaSession(video); // 10s skip buttons in the native PiP window
   return {
     mode: 'native-only',
     applySettings: () => {},
@@ -213,6 +216,7 @@ async function startNativeOnly(
     setSource: () => {},
     stop: async () => {
       video.removeEventListener('leavepictureinpicture', onLeave);
+      clearMediaSession();
       try {
         if (document.pictureInPictureElement === video) await document.exitPictureInPicture();
       } catch {
@@ -329,10 +333,88 @@ function wrapLine(ctx: CanvasRenderingContext2D, line: string, maxWidth: number)
   return out;
 }
 
-function bindMediaSession(video: HTMLVideoElement): void {
+// Tracks the per-element listeners feeding the native PiP scrubber + play
+// button, so a setSource() swap (or stop) can detach them from the old element.
+let mediaSessionCleanup: (() => void) | null = null;
+
+/**
+ * Wire the native PiP window controls via Media Session.
+ * @param video  the REAL site video (audio + true timeline)
+ * @param hidden the stream-backed element actually in the PiP window, kept in
+ *               sync so its frames freeze/resume with the real video. Omitted
+ *               for the native-only tier where the real video IS the PiP element.
+ */
+function bindMediaSession(video: HTMLVideoElement, hidden?: HTMLVideoElement): void {
   try {
-    navigator.mediaSession.setActionHandler('play', () => void video.play().catch(() => {}));
-    navigator.mediaSession.setActionHandler('pause', () => video.pause());
+    const ms = navigator.mediaSession;
+
+    // Play/pause. Registering these is what makes Chrome SHOW the button for a
+    // stream-backed PiP element. They drive the real video; the hidden element
+    // follows so its rendered frame freezes/resumes too.
+    const doPlay = () => {
+      void video.play().catch(() => {});
+      if (hidden && hidden.paused) void hidden.play().catch(() => {});
+    };
+    const doPause = () => {
+      video.pause();
+      if (hidden && !hidden.paused) hidden.pause();
+    };
+    ms.setActionHandler('play', doPlay);
+    ms.setActionHandler('pause', doPause);
+
+    // Render 10s skip buttons. Honor the browser's seekOffset if given, else 10s.
+    ms.setActionHandler('seekbackward', (d) => {
+      const by = d.seekOffset ?? 10;
+      video.currentTime = Math.max(0, video.currentTime - by);
+    });
+    ms.setActionHandler('seekforward', (d) => {
+      const by = d.seekOffset ?? 10;
+      video.currentTime = Math.min(video.duration || Infinity, video.currentTime + by);
+    });
+    // A clickable timeline requires both a seekto handler AND a continuously
+    // updated position state — without the latter Chrome shows no scrubber.
+    ms.setActionHandler('seekto', (d) => {
+      if (typeof d.seekTime === 'number') video.currentTime = d.seekTime;
+    });
+
+    const pushPosition = () => {
+      const duration = video.duration;
+      // setPositionState throws for non-finite/zero duration (live streams).
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      try {
+        ms.setPositionState({
+          duration,
+          position: Math.min(video.currentTime, duration),
+          playbackRate: video.playbackRate || 1,
+        });
+      } catch {
+        // bad values mid-swap; next tick recovers
+      }
+    };
+
+    // Drive playbackState from the REAL video. The hidden PiP element is always
+    // "playing" (a live stream), so without this Chrome assumes playback never
+    // pauses and only ever dispatches 'pause' — the play action never fires and
+    // the button looks dead. Syncing here makes Chrome alternate correctly.
+    const pushPlayState = () => {
+      ms.playbackState = video.paused ? 'paused' : 'playing';
+    };
+
+    mediaSessionCleanup?.();
+    video.addEventListener('timeupdate', pushPosition);
+    video.addEventListener('durationchange', pushPosition);
+    video.addEventListener('ratechange', pushPosition);
+    video.addEventListener('play', pushPlayState);
+    video.addEventListener('pause', pushPlayState);
+    mediaSessionCleanup = () => {
+      video.removeEventListener('timeupdate', pushPosition);
+      video.removeEventListener('durationchange', pushPosition);
+      video.removeEventListener('ratechange', pushPosition);
+      video.removeEventListener('play', pushPlayState);
+      video.removeEventListener('pause', pushPlayState);
+    };
+    pushPosition();
+    pushPlayState();
   } catch {
     // media session unsupported in this context
   }
@@ -340,19 +422,27 @@ function bindMediaSession(video: HTMLVideoElement): void {
 
 function clearMediaSession(): void {
   try {
-    navigator.mediaSession.setActionHandler('play', null);
-    navigator.mediaSession.setActionHandler('pause', null);
+    mediaSessionCleanup?.();
+    mediaSessionCleanup = null;
+    const ms = navigator.mediaSession;
+    ms.setActionHandler('play', null);
+    ms.setActionHandler('pause', null);
+    ms.setActionHandler('seekbackward', null);
+    ms.setActionHandler('seekforward', null);
+    ms.setActionHandler('seekto', null);
+    ms.playbackState = 'none';
+    if ('setPositionState' in ms) ms.setPositionState();
   } catch {
     // ignore
   }
 }
 
 function showInlineToast(text: string): void {
-  const id = '__subly_toast';
+  const id = '__captiv_toast';
   document.getElementById(id)?.remove();
   const el = document.createElement('div');
   el.id = id;
-  el.setAttribute('data-subly', 'toast');
+  el.setAttribute('data-captiv', 'toast');
   el.textContent = text;
   el.style.cssText =
     'position:fixed;z-index:2147483647;right:12px;bottom:12px;max-width:320px;' +

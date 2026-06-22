@@ -64,7 +64,7 @@ export function createPipUI(
   hooks: { onRequestClose: () => void },
 ): PipUI {
   const doc = pipWindow.document;
-  doc.title = 'Picture in Picture';
+  doc.title = 'Captiv - Picture in Picture with Subtitles';
 
   const style = doc.createElement('style');
   style.textContent = SHEET;
@@ -81,7 +81,7 @@ export function createPipUI(
 
   const controls = doc.createElement('div');
   controls.className = 'controls';
-  controls.setAttribute('data-subly', 'controls');
+  controls.setAttribute('data-captiv', 'controls');
   const playBtn = button(doc, '⏸');
   const seek = doc.createElement('input');
   seek.type = 'range';
@@ -90,7 +90,7 @@ export function createPipUI(
   seek.value = '0';
   const time = doc.createElement('span');
   time.className = 'time';
-  time.setAttribute('data-subly', 'time');
+  time.setAttribute('data-captiv', 'time');
   time.textContent = '–:– / –:–';
   const volBtn = button(doc, '🔊');
   volBtn.title = 'Toggle mute';
@@ -102,13 +102,17 @@ export function createPipUI(
   volSlider.step = '0.02';
   volSlider.value = '1';
   volSlider.title = 'Volume';
+  const rewind = button(doc, '⏪10');
+  rewind.title = 'Rewind 10 seconds';
+  const forward = button(doc, '10⏩');
+  forward.title = 'Forward 10 seconds';
   const smaller = button(doc, 'A−');
   smaller.title = 'Smaller subtitles';
   const bigger = button(doc, 'A+');
   bigger.title = 'Bigger subtitles';
   const back = button(doc, '↩ Tab');
   back.title = 'Back to tab';
-  controls.append(playBtn, seek, time, volBtn, volSlider, smaller, bigger, back);
+  controls.append(playBtn, rewind, seek, time, forward, volBtn, volSlider, smaller, bigger, back);
 
   doc.body.append(stage, subs, controls);
 
@@ -183,6 +187,8 @@ export function createPipUI(
       if (video.paused) void video.play().catch(() => {});
       else video.pause();
     };
+    const onRewind = () => { video.currentTime = Math.max(0, video.currentTime - 10); };
+    const onForward = () => { video.currentTime = Math.min(video.duration || Infinity, video.currentTime + 10); };
     const onSeekInput = () => {
       dragging = true;
       time.textContent = `${fmt(Number(seek.value))} / ${fmt(video.duration)}`;
@@ -200,6 +206,8 @@ export function createPipUI(
     };
 
     playBtn.addEventListener('click', onPlayClick);
+    rewind.addEventListener('click', onRewind);
+    forward.addEventListener('click', onForward);
     seek.addEventListener('input', onSeekInput);
     seek.addEventListener('change', onSeekChange);
     volBtn.addEventListener('click', onVolBtnClick);
@@ -215,6 +223,8 @@ export function createPipUI(
 
     boundCleanup = () => {
       playBtn.removeEventListener('click', onPlayClick);
+      rewind.removeEventListener('click', onRewind);
+      forward.removeEventListener('click', onForward);
       seek.removeEventListener('input', onSeekInput);
       seek.removeEventListener('change', onSeekChange);
       volBtn.removeEventListener('click', onVolBtnClick);

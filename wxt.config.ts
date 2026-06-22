@@ -6,8 +6,8 @@ export default defineConfig({
   publicDir: 'src/public',
   outDir: '.output',
   manifest: {
-    name: 'Subly — PiP with Subtitles That Just Works',
-    short_name: 'Subly',
+    name: 'Captiv — PiP with Subtitles That Just Works',
+    short_name: 'Captiv',
     description:
       "Watch any video in Picture-in-Picture with the site's own subtitles shown in the floating window. Works on every site.",
     minimum_chrome_version: '116',

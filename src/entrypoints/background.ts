@@ -162,12 +162,15 @@ export default defineBackground(() => {
     if (!winner) {
       bgDiag(tabId, 'scan/no-video');
       void flashBadge(tabId, '0');
-      void showToast(tabId, 'Subly: no video found on this page.');
+      void showToast(tabId, 'Captiv: no video found on this page.');
       return;
     }
 
     const sessionId = `s${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    const tier: PipTier = winner.isTop ? 'docpip' : 'canvas';
+    // Always use the canvas/native tier so every site (top-frame like YouTube
+    // and cross-origin iframes like flixmomo) gets the same native PiP window
+    // with Chrome-drawn controls. Subtitles are burned into the canvas.
+    const tier: PipTier = 'canvas';
     bgDiag(tabId, 'elect/winner', {
       sessionId,
       frameId: winner.frameId,
@@ -282,7 +285,7 @@ function scanFrame(): unknown {
 }
 
 function toastInjected(text: string): void {
-  const id = '__subly_toast';
+  const id = '__captiv_toast';
   document.getElementById(id)?.remove();
   const el = document.createElement('div');
   el.id = id;

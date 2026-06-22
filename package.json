@@ -1,6 +1,6 @@
 {
-  "name": "subly",
-  "version": "0.1.0",
+  "name": "captiv",
+  "version": "1.0.0",
   "private": true,
   "description": "Watch any video in Picture-in-Picture with the site's subtitles shown in the floating window.",
   "type": "module",
