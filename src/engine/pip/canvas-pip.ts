@@ -90,6 +90,17 @@ export async function startCanvasPip(
   let requestFrame: (() => void) | null = null;
   let src = video; // mutable: setSource() follows player element swaps
 
+  // Some players (e.g. videasy) render subtitles to a <canvas> overlay rather
+  // than DOM text or a text track — invisible to both subtitle sources, and not
+  // baked into the video pixels. Since this code runs INSIDE the player's frame,
+  // we can find that canvas and composite it onto our frame. Only used when our
+  // own sources produced no cue (otherwise our text wins, no double subtitles).
+  let overlays: HTMLCanvasElement[] = [];
+  const refreshOverlays = () => {
+    overlays = detectOverlayCanvases(src, canvas);
+    diag('canvas/overlays', { count: overlays.length });
+  };
+
   const draw = () => {
     try {
       ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
@@ -97,7 +108,12 @@ export async function startCanvasPip(
       return; // transient decode states
     }
     const text = cue?.text ? coerceText(cue.text) : '';
-    if (text) drawCue(ctx, canvas, text, settings);
+    if (text) {
+      drawCue(ctx, canvas, text, settings);
+    } else {
+      // No cue from our sources — composite the player's own rendered overlay(s).
+      for (const ov of overlays) drawOverlayCanvas(ctx, canvas, src, ov);
+    }
     // Chromium throttles compositing of non-interacted cross-origin iframes —
     // exactly where this code runs. captureStream only emits frames on
     // compositor commits, so without this the PiP image freezes until the
@@ -108,6 +124,9 @@ export async function startCanvasPip(
 
   let stopPump = startFramePump(video, draw);
   const slowTimer = setInterval(draw, SLOW_REDRAW_MS);
+  // Overlay canvases mount lazily and move; re-detect periodically.
+  refreshOverlays();
+  const overlayTimer = setInterval(refreshOverlays, 1000);
 
   const stream = captureStreamOf(canvas, CAPTURE_FPS);
   const track = stream.getVideoTracks()[0] as
@@ -129,6 +148,7 @@ export async function startCanvasPip(
     if (stopped) return;
     stopped = true;
     clearInterval(slowTimer);
+    clearInterval(overlayTimer);
     stopPump();
     try {
       if (document.pictureInPictureElement === hidden) await document.exitPictureInPicture();
@@ -183,6 +203,7 @@ export async function startCanvasPip(
       stopPump();
       src = next;
       stopPump = startFramePump(next, draw);
+      refreshOverlays();
       bindMediaSession(next, hidden);
     },
     stop,
@@ -344,6 +365,72 @@ let mediaSessionCleanup: (() => void) | null = null;
  *               sync so its frames freeze/resume with the real video. Omitted
  *               for the native-only tier where the real video IS the PiP element.
  */
+/**
+ * Canvas overlays the player draws subtitles/effects onto, sitting on top of the
+ * video. Returns same-frame, non-tainted canvases that cover a meaningful chunk
+ * of the video footprint. `ownCanvas` (our compositor) is never in the DOM, so it
+ * is excluded implicitly, but we guard against it anyway.
+ */
+function detectOverlayCanvases(
+  video: HTMLVideoElement,
+  ownCanvas: HTMLCanvasElement,
+): HTMLCanvasElement[] {
+  const doc = video.ownerDocument;
+  const vr = video.getBoundingClientRect();
+  if (vr.width === 0 || vr.height === 0) return [];
+  const videoArea = vr.width * vr.height;
+  const out: HTMLCanvasElement[] = [];
+  for (const c of Array.from(doc.querySelectorAll('canvas'))) {
+    if (c === ownCanvas) continue;
+    const r = c.getBoundingClientRect();
+    if (r.width < 20 || r.height < 20) continue;
+    const ox = Math.min(r.right, vr.right) - Math.max(r.left, vr.left);
+    const oy = Math.min(r.bottom, vr.bottom) - Math.max(r.top, vr.top);
+    if (ox <= 0 || oy <= 0) continue;
+    if (ox * oy < videoArea * 0.3) continue; // must overlap ≥30% of the video
+    if (isCanvasTainted(c)) continue; // can't read it without breaking our stream
+    out.push(c);
+  }
+  return out;
+}
+
+/** True if drawing this canvas would taint a 2D context (cross-origin pixels). */
+function isCanvasTainted(c: HTMLCanvasElement): boolean {
+  try {
+    const probe = document.createElement('canvas');
+    probe.width = probe.height = 2;
+    const pctx = probe.getContext('2d');
+    if (!pctx) return true;
+    pctx.drawImage(c, 0, 0, 2, 2);
+    pctx.getImageData(0, 0, 1, 1); // throws if tainted
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Draw an overlay canvas onto the compositor, mapped to its on-screen position
+ *  over the video (handles letterboxing and partial overlays). */
+function drawOverlayCanvas(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  video: HTMLVideoElement,
+  overlay: HTMLCanvasElement,
+): void {
+  const vr = video.getBoundingClientRect();
+  if (vr.width === 0 || vr.height === 0) return;
+  const r = overlay.getBoundingClientRect();
+  const dx = ((r.left - vr.left) / vr.width) * canvas.width;
+  const dy = ((r.top - vr.top) / vr.height) * canvas.height;
+  const dw = (r.width / vr.width) * canvas.width;
+  const dh = (r.height / vr.height) * canvas.height;
+  try {
+    ctx.drawImage(overlay, dx, dy, dw, dh);
+  } catch {
+    // overlay became tainted/detached mid-frame; next refresh drops it
+  }
+}
+
 function bindMediaSession(video: HTMLVideoElement, hidden?: HTMLVideoElement): void {
   try {
     const ms = navigator.mediaSession;

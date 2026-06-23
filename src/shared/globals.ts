@@ -11,6 +11,13 @@ export interface PipEngineGlobal {
   start(sessionId: string, candidateId: string, tier: PipTier): Promise<void>;
   stop(reason?: string): Promise<void>;
   state(): SessionState;
+  /** Cross-frame subtitle relay: scrape captions in THIS (non-video) frame and
+   *  report them to the background for forwarding to the session frame. No-op in
+   *  the frame that owns the active session. */
+  startRelay(sessionId: string): void;
+  stopRelay(): void;
+  /** Feed a caption cue scraped by another frame into the active session. */
+  injectCue(cue: { text: string; html?: string } | null): void;
 }
 
 declare global {

@@ -21,6 +21,7 @@ const STALE_AFTER_MS = 45_000;
 const CHOOSE_THRESHOLD = 0.35;
 
 interface Tracked {
+  /** Latest element instance occupying this caption region. */
   el: Element;
   changeTimes: number[];
   hintBonus: number;
@@ -32,7 +33,11 @@ export class DomOverlaySource implements SubtitleSource {
   private onCue: CueListener = () => {};
   private observers: MutationObserver[] = [];
   private container: Element | null = null;
-  private tracked = new Map<Element, Tracked>();
+  // Keyed by caption REGION (a quantized vertical band over the video), not by
+  // element identity. Players that re-create the caption node every cue would
+  // otherwise never let any single element accumulate the change-cadence needed
+  // to be selected; bucketing by region lets the churn add up.
+  private tracked = new Map<string, Tracked>();
   private chosen: Tracked | null = null;
   private lastEmitted: string | null = null;
   private lastChangeAt = 0;
@@ -40,6 +45,7 @@ export class DomOverlaySource implements SubtitleSource {
   private pendingTargets = new Set<Element>();
   private healTimer: ReturnType<typeof setInterval> | undefined;
   private observedRoot: Element | null = null;
+  private observedRoots = new Set<Element | ShadowRoot>();
   private rawMutations = 0;
   private lastStatsAt = 0;
 
@@ -67,6 +73,9 @@ export class DomOverlaySource implements SubtitleSource {
         this.chosen = null;
         this.arm('rearm');
       }
+      // Caption layers (and their shadow roots) are often built lazily, after
+      // we first armed — discover and observe any new shadow roots.
+      this.attachNewShadowRoots();
       // Captions may appear long after attach (CC enabled later, caption layer
       // built lazily). While nothing is chosen, re-run the cheap hint sweep.
       if (!this.chosen && this.observedRoot) {
@@ -102,28 +111,51 @@ export class DomOverlaySource implements SubtitleSource {
       videoDoc: this.video.ownerDocument === document ? 'same' : 'child',
     });
     if (!this.observedRoot) return;
+    this.observedRoots = new Set();
 
     const roots: (Element | ShadowRoot)[] = [this.observedRoot];
     collectShadowRoots(this.observedRoot, roots, SWEEP_NODE_BUDGET);
-
-    for (const root of roots) {
-      const observer = new MutationObserver(this.onMutations);
-      observer.observe(root, {
-        subtree: true,
-        childList: true,
-        characterData: true,
-        attributes: true,
-        attributeFilter: ['style', 'class', 'hidden'],
-      });
-      this.observers.push(observer);
-    }
+    for (const root of roots) this.observeRoot(root);
 
     this.initialSweep(roots);
+  }
+
+  /** Attach a mutation observer to a document/shadow root (once). */
+  private observeRoot(root: Element | ShadowRoot): void {
+    if (this.observedRoots.has(root)) return;
+    const observer = new MutationObserver(this.onMutations);
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['style', 'class', 'hidden'],
+    });
+    this.observers.push(observer);
+    this.observedRoots.add(root);
+  }
+
+  /** MutationObserver can't pierce shadow boundaries, and players (incl. some
+   *  caption layers) attach shadow roots lazily — well after we first armed.
+   *  Periodically discover and observe any new ones. */
+  private attachNewShadowRoots(): void {
+    if (!this.observedRoot) return;
+    const roots: (Element | ShadowRoot)[] = [];
+    collectShadowRoots(this.observedRoot, roots, SWEEP_NODE_BUDGET);
+    let added = 0;
+    for (const root of roots) {
+      if (this.observedRoots.has(root)) continue;
+      this.observeRoot(root);
+      this.initialSweep([root]);
+      added++;
+    }
+    if (added) diag('dom-overlay/shadow-roots', { added, total: this.observedRoots.size });
   }
 
   private disconnectObservers(): void {
     for (const o of this.observers) o.disconnect();
     this.observers = [];
+    this.observedRoots = new Set();
   }
 
   stop(): void {
@@ -177,11 +209,17 @@ export class DomOverlaySource implements SubtitleSource {
     for (const target of targets) {
       const block = this.captionBlockFor(target);
       if (!block) continue;
-      let tracked = this.tracked.get(block);
+      const sig = this.regionSig(block);
+      if (!sig) continue;
+      let tracked = this.tracked.get(sig);
       if (!tracked) {
         if (this.tracked.size >= MAX_TRACKED) this.pruneTracked();
         tracked = { el: block, changeTimes: [], hintBonus: hintBonus(block) };
-        this.tracked.set(block, tracked);
+        this.tracked.set(sig, tracked);
+      } else {
+        // Same region, (possibly) new element instance — follow it.
+        tracked.el = block;
+        tracked.hintBonus = Math.max(tracked.hintBonus, hintBonus(block));
       }
       const last = tracked.changeTimes[tracked.changeTimes.length - 1];
       if (last === undefined || now - last >= CADENCE_MIN_MS) {
@@ -207,42 +245,58 @@ export class DomOverlaySource implements SubtitleSource {
   }
 
   private passesShape(el: Element): boolean {
-    if (!el.isConnected) return false;
-    if (el.querySelector('video, iframe, input, button, select, textarea, a[href]')) return false;
+    return this.shapeReason(el) === '';
+  }
+
+  /** '' if the element looks like a caption block; otherwise the failing check. */
+  private shapeReason(el: Element): string {
+    if (!el.isConnected) return 'detached';
+    if (el.querySelector('video, iframe, input, button, select, textarea, a[href]'))
+      return 'has-interactive-child';
 
     const text = normalizeText(readElementText(el));
-    if (text.length === 0 || text.length > MAX_TEXT_LEN) return false;
-    if (text.split('\n').length > MAX_LINES) return false;
-    if (hasTimeControlHint(el)) return false;
-    if (looksLikeTimeDisplay(text)) return false;
+    if (text.length === 0) return 'empty';
+    if (text.length > MAX_TEXT_LEN) return 'too-long';
+    if (text.split('\n').length > MAX_LINES) return 'too-many-lines';
+    if (hasTimeControlHint(el)) return 'time-control';
+    if (looksLikeTimeDisplay(text)) return 'time-display';
 
     const ref = this.getRefRect();
     const rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return false;
-    if (rect.height > ref.height * 0.45) return false;
-    if (rect.width > ref.width * 1.1) return false;
-    // must overlap the video footprint
+    if (rect.width === 0 || rect.height === 0) return 'zero-rect';
+    if (rect.height > ref.height * 0.45) return 'too-tall';
+    if (rect.width > ref.width * 1.1) return 'too-wide';
     const overlapX = Math.min(rect.right, ref.right) - Math.max(rect.left, ref.left);
     const overlapY = Math.min(rect.bottom, ref.bottom) - Math.max(rect.top, ref.top);
-    if (overlapX <= 0 || overlapY <= 0) return false;
+    if (overlapX <= 0 || overlapY <= 0) return 'no-overlap';
 
     const win = el.ownerDocument.defaultView;
     if (win) {
       const style = win.getComputedStyle(el);
-      if (style.display === 'none' || style.visibility === 'hidden') return false;
-      if (Number(style.opacity) < 0.05) return false;
+      if (style.display === 'none' || style.visibility === 'hidden') return 'hidden';
+      if (Number(style.opacity) < 0.05) return 'transparent';
     }
-    return true;
+    return '';
   }
 
-  private choose(): void {
+  /** Quantized caption region key: a vertical band over the video footprint. */
+  private regionSig(el: Element): string | null {
+    const ref = this.getRefRect();
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0 || ref.height === 0) return null;
+    const centerY = (rect.top + rect.bottom) / 2;
+    const band = Math.round(((centerY - ref.top) / ref.height) * 12);
+    return `b${band}`;
+  }
+
+  /** Highest-scoring live caption candidate. */
+  private pickBest(): { best: Tracked | null; score: number } {
     let best: Tracked | null = null;
     let bestScore = 0;
+    const ref = this.getRefRect();
     for (const tracked of this.tracked.values()) {
       if (!tracked.el.isConnected || !this.passesShape(tracked.el)) continue;
-      const cadence = cadenceScore(tracked.changeTimes);
-      let score = tracked.hintBonus + cadence;
-      const ref = this.getRefRect();
+      let score = tracked.hintBonus + cadenceScore(tracked.changeTimes);
       const rect = tracked.el.getBoundingClientRect();
       // bottom-third placement is the strongest generic caption signal
       if (rect.top > ref.top + ref.height * 0.55) score += 0.12;
@@ -251,16 +305,24 @@ export class DomOverlaySource implements SubtitleSource {
         best = tracked;
       }
     }
-    if (best && bestScore >= CHOOSE_THRESHOLD && best !== this.chosen) {
+    return { best, score: bestScore };
+  }
+
+  private choose(): void {
+    const { best, score } = this.pickBest();
+    if (best && score >= CHOOSE_THRESHOLD && best !== this.chosen) {
       this.chosen = best;
       this.lastEmitted = null; // force re-emit from the new element
       diag('dom-overlay/chosen', {
         el: tagOf(best.el),
-        score: +bestScore.toFixed(2),
+        score: +score.toFixed(2),
         changes: best.changeTimes.length,
         tracked: this.tracked.size,
       });
     }
+    // Region entries refresh their .el on each flush; a still-disconnected
+    // chosen means the caption was removed with no same-region replacement
+    // (end of a caption) — clear it.
     if (this.chosen && !this.chosen.el.isConnected) {
       this.chosen = null;
       this.emit(null);
@@ -291,17 +353,17 @@ export class DomOverlaySource implements SubtitleSource {
   }
 
   private pruneTracked(): void {
-    let worst: Element | null = null;
+    let worstKey: string | null = null;
     let worstScore = Infinity;
-    for (const [el, t] of this.tracked) {
+    for (const [sig, t] of this.tracked) {
       if (t === this.chosen) continue;
       const s = t.hintBonus + cadenceScore(t.changeTimes);
       if (s < worstScore) {
         worstScore = s;
-        worst = el;
+        worstKey = sig;
       }
     }
-    if (worst) this.tracked.delete(worst);
+    if (worstKey) this.tracked.delete(worstKey);
   }
 
   private initialSweep(roots: (Element | ShadowRoot)[]): void {
@@ -311,10 +373,13 @@ export class DomOverlaySource implements SubtitleSource {
       const all = root.querySelectorAll('*');
       for (const el of all) {
         if (budget-- <= 0) break;
-        if (el.childElementCount > 3 || this.tracked.has(el)) continue;
+        if (el.childElementCount > 3) continue;
         const bonus = hintBonus(el);
         if (bonus > 0 && this.passesShape(el)) {
-          this.tracked.set(el, { el, changeTimes: [Date.now()], hintBonus: bonus });
+          const sig = this.regionSig(el);
+          if (sig && !this.tracked.has(sig)) {
+            this.tracked.set(sig, { el, changeTimes: [Date.now()], hintBonus: bonus });
+          }
         }
       }
     }

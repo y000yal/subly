@@ -7,12 +7,16 @@ import { loadSettings, watchSettings } from '@/shared/settings';
 import { createLogger } from '@/shared/logger';
 import { diag } from '@/shared/diag';
 import { SubtitleEngine } from './subtitles/arbiter';
+import type { SubtitleCue } from './subtitles/types';
 import { openDocPip, PipError, type DocPipHandle } from './pip/doc-pip';
 import { startCanvasPip, type CanvasPipHandle } from './pip/canvas-pip';
 import { resolveCandidate, scanFrame } from './detect/video-detector';
 
 const log = createLogger('session');
 const RETRY_TOAST_MS = 15_000;
+// While our own in-frame sources are producing cues, ignore relayed ones so we
+// never override local subtitles with a cross-frame guess.
+const RELAY_GRACE_MS = 5_000;
 
 export class PipSession {
   state: SessionState = 'idle';
@@ -24,6 +28,7 @@ export class PipSession {
   private ended = false;
   private subsAttached = false;
   private replaceTimer: ReturnType<typeof setInterval> | undefined;
+  private lastLocalCueAt = 0;
 
   constructor(
     private readonly sessionId: string,
@@ -54,6 +59,7 @@ export class PipSession {
         this.docHandle = handle;
         refRect = () => handle.refRect();
         this.subs.onCue((cue) => {
+          if (cue?.text) this.lastLocalCueAt = Date.now();
           diag('cue/render', { len: cue?.text.length ?? 0 });
           handle.ui.renderCue(cue);
         });
@@ -81,6 +87,7 @@ export class PipSession {
       });
       this.canvasHandle = handle;
       this.subs.onCue((cue) => {
+        if (cue?.text) this.lastLocalCueAt = Date.now();
         diag('cue/burn', { len: cue?.text.length ?? 0 });
         handle.setCue(cue);
       });
@@ -135,10 +142,24 @@ export class PipSession {
       this.subs = new SubtitleEngine();
       this.subs.attach(next, () => next.getBoundingClientRect());
       this.subs.onCue((cue) => {
+        if (cue?.text) this.lastLocalCueAt = Date.now();
         diag('cue/burn', { len: cue?.text.length ?? 0 });
         this.canvasHandle?.setCue(cue);
       });
     }, 1500);
+  }
+
+  /**
+   * A cue scraped by another frame (cross-frame relay) for players that render
+   * captions outside the video's frame. Only used while our own in-frame sources
+   * are silent, so it never overrides locally-detected subtitles.
+   */
+  feedRelayCue(cue: SubtitleCue | null): void {
+    if (this.ended) return;
+    if (Date.now() - this.lastLocalCueAt < RELAY_GRACE_MS) return;
+    diag('cue/relay', { len: cue?.text?.length ?? 0 });
+    this.canvasHandle?.setCue(cue);
+    this.docHandle?.ui.renderCue(cue);
   }
 
   private end(): void {

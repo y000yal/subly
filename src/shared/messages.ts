@@ -56,6 +56,9 @@ export type ContentToBgMessage =
   | { t: 'session/state'; sessionId: string; state: SessionState; mode?: PipMode }
   | { t: 'session/error'; sessionId: string; code: ErrorCode; detail?: string }
   | { t: 'diag/event'; event: DiagEvent }
+  // a non-video frame relayed a caption cue it scraped (cross-frame subtitle
+  // relay); background forwards it to the session frame.
+  | { t: 'subs/cue'; sessionId: string; cue: { text: string; html?: string } | null }
   // debug/e2e hook: run the full toggle flow as if the toolbar was clicked
   | { t: 'test/toggle' };
 

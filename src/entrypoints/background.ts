@@ -55,20 +55,51 @@ export default defineBackground(() => {
   function handleContentMessage(msg: ContentToBgMessage, tabId: number, frameId: number) {
     if (msg.t === 'session/state') {
       if (msg.state === 'idle' || msg.state === 'failed') {
+        stopRelays(tabId);
         sessions.delete(tabId);
         void setBadge(tabId, '');
       } else {
         sessions.set(tabId, { sessionId: msg.sessionId, frameId, state: msg.state });
         void setBadge(tabId, msg.state.startsWith('active') ? 'ON' : '');
+        // The video frame can't always reach the captions (some players render
+        // them in a sibling/parent frame). Ask every OTHER frame to scrape and
+        // relay caption cues; the session frame self-skips.
+        if (msg.state === 'active-canvas' || msg.state === 'active-native') {
+          startRelays(tabId, msg.sessionId);
+        }
       }
     } else if (msg.t === 'session/error') {
       log.warn('session error', msg.code, msg.detail);
       bgDiag(tabId, 'session/error', { code: msg.code, detail: msg.detail });
+      stopRelays(tabId);
       sessions.delete(tabId);
       void flashBadge(tabId, '!');
     } else if (msg.t === 'diag/event') {
       relayDiag(tabId, msg.event);
+    } else if (msg.t === 'subs/cue') {
+      const session = sessions.get(tabId);
+      if (session) {
+        chrome.scripting
+          .executeScript({
+            target: { tabId, frameIds: [session.frameId] },
+            func: injectCueInjected,
+            args: [msg.cue],
+          })
+          .catch(() => {});
+      }
     }
+  }
+
+  function startRelays(tabId: number, sessionId: string): void {
+    chrome.scripting
+      .executeScript({ target: { tabId, allFrames: true }, func: startRelayInjected, args: [sessionId] })
+      .catch(() => {});
+  }
+
+  function stopRelays(tabId: number): void {
+    chrome.scripting
+      .executeScript({ target: { tabId, allFrames: true }, func: stopRelayInjected })
+      .catch(() => {});
   }
 
   // ---- diagnostics trail: buffer per tab, mirror into the top frame ----
@@ -262,6 +293,20 @@ async function startInjected(
 
 function stopInjected(): void {
   void globalThis.__pipEngine?.stop('user');
+}
+
+function startRelayInjected(sessionId: string): void {
+  const e = globalThis.__pipEngine;
+  // Only non-session frames relay; the session frame's state is not 'idle'.
+  if (e && e.state() === 'idle') e.startRelay(sessionId);
+}
+
+function stopRelayInjected(): void {
+  globalThis.__pipEngine?.stopRelay();
+}
+
+function injectCueInjected(cue: { text: string; html?: string } | null): void {
+  globalThis.__pipEngine?.injectCue(cue);
 }
 
 function scanFrame(): unknown {
